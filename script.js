@@ -6,7 +6,11 @@
    * ------------------------------------------------------------------ */
   const $ = (sel, root = document) => root.querySelector(sel);
 
-  const STORE_KEY = 'smartify.state.v1';
+  // Paste your deployed worker URL here (see worker.js) and every visitor gets working extraction
+  // with no setup, e.g. 'https://smartify-fetch.yourname.workers.dev/?url={url}'
+  const HOSTED_FETCHER = 'https://extractor.toyeebexpect06.workers.dev/?url={url}';
+
+  const STORE_KEY = 'smartify.state.v2';
   const CONCURRENCY = 20;           // domains crawled in parallel
   const PACING_MS = 60;             // minimum gap between domain starts
   const FETCH_TIMEOUT_MS = 12000;
@@ -17,6 +21,7 @@
 
   // {url} is replaced with the encoded page URL
   const PROXIES = {
+    local: '/api/fetch?url={url}',          // served by server.js (default when opened over http)
     allorigins: 'https://api.allorigins.win/raw?url={url}',
     corsproxy: 'https://corsproxy.io/?url={url}',
   };
@@ -58,7 +63,7 @@
       verifiedOnly: true,
       ownerOnly: true,
       extraPaths: ['/policies/privacy-policy'],
-      proxy: 'allorigins',
+      proxy: location.protocol === 'file:' ? 'allorigins' : 'local',
       customProxy: '',
     },
     viewVerifiedOnly: true,
@@ -387,6 +392,10 @@
 
     const targets = parseTargets($('#targets').value);
     if (!targets.length) { toast('Paste at least one store URL first.', 'warn'); return; }
+    if (state.config.proxy === 'local' && location.protocol === 'file:') {
+      toast('Start the server with "node server.js", then open http://localhost:3000', 'warn');
+      return;
+    }
     if (state.config.proxy === 'custom' && !state.config.customProxy.trim()) {
       toast('Enter your proxy URL, or pick another page fetcher.', 'warn');
       $('#customProxy').focus();
@@ -748,12 +757,13 @@
    * ------------------------------------------------------------------ */
   function init() {
     load();
+    if (HOSTED_FETCHER) { state.config.proxy = 'custom'; state.config.customProxy = HOSTED_FETCHER; }
 
     $('#optDeep').checked = !!state.config.deep;
     $('#optVerified').checked = !!state.config.verifiedOnly;
     $('#optOwner').checked = !!state.config.ownerOnly;
     $('#viewVerified').checked = state.viewVerifiedOnly;
-    if (!(state.config.proxy in { ...PROXIES, custom: 1, none: 1 })) state.config.proxy = 'allorigins';
+    if (!(state.config.proxy in { ...PROXIES, custom: 1, none: 1 })) state.config.proxy = location.protocol === 'file:' ? 'allorigins' : 'local';
     renderChips();
     syncProxyUI();
 
