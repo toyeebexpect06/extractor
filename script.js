@@ -8,7 +8,7 @@
 
   // Paste your deployed worker URL here (see worker.js) and every visitor gets working extraction
   // with no setup, e.g. 'https://smartify-fetch.yourname.workers.dev/?url={url}'
-  const HOSTED_FETCHER = 'https://extractor.toyeebexpect06.workers.dev/?url={url}';
+  const HOSTED_FETCHER = 'https://fetcher.toyeebexpect06.workers.dev/?url={url}';
 
   const STORE_KEY = 'smartify.state.v2';
   const CONCURRENCY = 20;           // domains crawled in parallel
