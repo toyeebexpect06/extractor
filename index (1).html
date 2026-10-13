@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smartify — Bulk Store Owner Email Extractor</title>
+  <meta name="description" content="Paste store URLs and pull verified owner emails in bulk. Deep policy and contact page crawling, MX verification and one-click CSV export.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="top">
+    <div class="brand">smartify.<span class="brand-sub">owner email extraction</span></div>
+    <div class="status" role="status" aria-live="polite">
+      <span id="statusDot" class="dot" data-state="idle"></span>
+      <span id="statusText">idle</span>
+      <span class="status-sep" aria-hidden="true"></span>
+      <span id="queuedText">0 queued</span>
+    </div>
+  </header>
+
+  <main class="wrap">
+
+    <section class="hero">
+      <h1>Pull verified owner emails out of any store URL.</h1>
+      <p class="lede">Every domain is crawled together with its privacy-policy, contact and about pages. Addresses are split into mailbox and domain, checked against live MX records, then handed back as a clean export.</p>
+      <ul class="features">
+        <li><strong>Deep crawl</strong><span>/policies, /contact, /about</span></li>
+        <li><strong>MX verified</strong><span>Live deliverability check</span></li>
+        <li><strong>Split output</strong><span>Mailbox ÷ email domain</span></li>
+      </ul>
+    </section>
+
+    <section class="card run" aria-labelledby="runTitle">
+      <div class="run-head">
+        <h2 id="runTitle">Live run</h2>
+        <p class="run-meta">20 parallel · 60ms pacing · progress auto-saved</p>
+      </div>
+
+      <div class="run-main">
+        <div class="pct"><span id="runPct">0</span><small>%</small></div>
+        <div class="bar-wrap">
+          <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Extraction progress" id="barTrack">
+            <div class="bar-fill" id="barFill"></div>
+          </div>
+          <div class="counts">
+            <span><b id="cDone">0</b> completed</span>
+            <span><b id="cPending">0</b> pending</span>
+            <span><b id="cFailed">0</b> failed</span>
+          </div>
+        </div>
+      </div>
+
+      <dl class="stats">
+        <div><dt>Scanned</dt><dd id="statScanned">0/0</dd></div>
+        <div><dt>Verified</dt><dd id="statVerified">0</dd></div>
+        <div><dt>With email</dt><dd id="statWith">0</dd></div>
+        <div><dt>No email</dt><dd id="statNo">0</dd></div>
+      </dl>
+    </section>
+
+    <div class="grid">
+
+      <section class="card" aria-labelledby="targetTitle">
+        <div class="card-head">
+          <h2 id="targetTitle">01 · Target list</h2>
+          <button type="button" class="link-btn" id="clearBtn">Clear</button>
+        </div>
+        <label for="targets" class="sr-only">Store URLs, one per line</label>
+        <textarea id="targets" spellcheck="false" autocomplete="off" placeholder="https://example-store.com&#10;another-shop.co&#10;https://third-store.myshopify.com"></textarea>
+        <div class="actions">
+          <input type="file" id="fileInput" accept=".txt,.csv,.json,text/plain,text/csv,application/json" hidden>
+          <button type="button" class="btn ghost" id="fileBtn">Import file <span class="hint">.txt · .csv · .json</span></button>
+          <button type="button" class="btn primary" id="runBtn">Run extraction</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="cfgTitle">
+        <div class="card-head">
+          <h2 id="cfgTitle">02 · Crawl config</h2>
+        </div>
+
+        <label class="opt" for="optDeep">
+          <span class="opt-text"><strong>Deep crawl</strong><span>Sweeps /policies/privacy-policy, /contact and /about.</span></span>
+          <input type="checkbox" role="switch" id="optDeep" checked>
+        </label>
+        <label class="opt" for="optVerified">
+          <span class="opt-text"><strong>Verified only</strong><span>Keep addresses whose mail domain has live MX records.</span></span>
+          <input type="checkbox" role="switch" id="optVerified" checked>
+        </label>
+        <label class="opt" for="optOwner">
+          <span class="opt-text"><strong>Owner-grade only</strong><span>Drop low-confidence generic addresses.</span></span>
+          <input type="checkbox" role="switch" id="optOwner" checked>
+        </label>
+
+        <div class="field">
+          <label for="pathInput">Extra paths</label>
+          <div class="chips" id="chips" aria-live="polite"></div>
+          <div class="row">
+            <input type="text" id="pathInput" placeholder="/pages/contact-us" autocomplete="off" spellcheck="false">
+            <button type="button" class="btn ghost small" id="addPath">Add</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="proxySelect">Page fetcher</label>
+          <select id="proxySelect">
+            <option value="allorigins">allorigins (public proxy)</option>
+            <option value="corsproxy">corsproxy.io (public proxy)</option>
+            <option value="custom">My own proxy (recommended)</option>
+            <option value="none">Direct (only for sites that allow CORS)</option>
+          </select>
+          <input type="text" id="customProxy" class="hidden" placeholder="https://your-worker.workers.dev/?url={url}" autocomplete="off" spellcheck="false">
+          <p class="note">Browsers block reading other sites directly, so pages load through a proxy. See worker.js to host your own.</p>
+        </div>
+      </section>
+
+    </div>
+
+    <section class="card results" aria-labelledby="resTitle">
+      <div class="card-head wrap-head">
+        <h2 id="resTitle">03 · Results · <span id="resCount">0 rows</span></h2>
+        <div class="res-tools">
+          <label class="check" for="viewVerified">
+            <input type="checkbox" id="viewVerified" checked>
+            <span>Verified only</span>
+          </label>
+          <button type="button" class="btn ghost small" id="copyBtn">Copy</button>
+          <button type="button" class="btn ghost small" id="csvBtn">CSV</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Store</th>
+              <th scope="col">Email</th>
+              <th scope="col">Mailbox</th>
+              <th scope="col">Email domain</th>
+              <th scope="col">MX</th>
+              <th scope="col">Confidence</th>
+              <th scope="col">Found on</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <p class="empty" id="emptyMsg">Awaiting input — paste a URL list and press run extraction.</p>
+      <p class="note" id="capNote" hidden></p>
+    </section>
+
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
