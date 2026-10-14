@@ -8,15 +8,16 @@
 
   // Paste your deployed worker URL here (see worker.js) and every visitor gets working extraction
   // with no setup, e.g. 'https://smartify-fetch.yourname.workers.dev/?url={url}'
-  const HOSTED_FETCHER = 'https://fetcher.toyeebexpect06.workers.dev/?url={url}';
+  const HOSTED_FETCHER = 'https://extractor.toyeebexpect06.workers.dev/?url={url}';
 
   const STORE_KEY = 'smartify.state.v2';
-  const CONCURRENCY = 20;           // domains crawled in parallel
-  const PACING_MS = 60;             // minimum gap between domain starts
-  const FETCH_TIMEOUT_MS = 12000;
-  const DNS_TIMEOUT_MS = 6000;
+  const CONCURRENCY = 50;           // domains crawled in parallel
+  const PACING_MS = 5;              // minimum gap between domain starts
+  const FETCH_TIMEOUT_MS = 8000;
+  const MAX_INFLIGHT = 80;          // page requests in flight at once, across all domains
+  const DNS_TIMEOUT_MS = 4000;
   const MAX_PAGE_CHARS = 1500000;
-  const MAX_EMAILS_PER_DOMAIN = 8;
+  const MAX_EMAILS_PER_DOMAIN = 1;   // one best address per store
   const MAX_RENDER_ROWS = 1500;
 
   // {url} is replaced with the encoded page URL
@@ -255,6 +256,20 @@
   }
   const RANK = { high: 0, medium: 1, low: 2 };
 
+  // Lower is better. Order of importance: confidence, MX result, same domain as the store, then mailbox type.
+  const GENERIC_ORDER = ['contact', 'hello', 'info', 'hi', 'hey', 'support', 'help', 'care', 'team', 'shop', 'store', 'sales'];
+  function qualityScore(r, storeDomain) {
+    let score = RANK[r.confidence] * 100;
+    score += r.mx === 'yes' ? 0 : r.mx === 'unknown' ? 30 : 60;
+    score += sameSite(r.emailDomain, storeDomain) ? 0 : 15;
+    if (GENERIC_MAILBOX.test(r.mailbox)) {
+      const i = GENERIC_ORDER.indexOf(r.mailbox.replace(/-/g, ''));
+      score += 5 + (i === -1 ? GENERIC_ORDER.length : i) * 0.1;
+    }
+    if (/^\d|\d{4,}/.test(r.mailbox)) score += 8;      // random-looking mailboxes
+    return score;
+  }
+
   /* ------------------------------------------------------------------ *
    *  MX verification (DNS over HTTPS, cached per domain)
    * ------------------------------------------------------------------ */
@@ -293,11 +308,28 @@
     return tpl.includes('{url}') ? tpl.replace('{url}', encodeURIComponent(url)) : tpl + encodeURIComponent(url);
   }
 
+  let inflight = 0;
+  const waiters = [];
+  async function acquire() {
+    if (inflight < MAX_INFLIGHT) { inflight++; return; }
+    await new Promise((resolve) => waiters.push(resolve));   // slot is handed over by release()
+  }
+  function release() {
+    const next = waiters.shift();
+    if (next) next(); else inflight--;
+  }
+
   async function fetchPage(url, cfg, signal) {
-    const r = await fetchT(proxied(url, cfg), { redirect: 'follow' }, FETCH_TIMEOUT_MS, signal);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const text = await r.text();
-    return text.slice(0, MAX_PAGE_CHARS);
+    await acquire();
+    try {
+      if (signal.aborted) throw new Error('aborted');
+      const r = await fetchT(proxied(url, cfg), { redirect: 'follow' }, FETCH_TIMEOUT_MS, signal);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      return text.slice(0, MAX_PAGE_CHARS);
+    } finally {
+      release();
+    }
   }
 
   function discoverLinks(html, t) {
@@ -320,59 +352,69 @@
     return out;
   }
 
-  async function crawlDomain(t, cfg, signal) {
+  async function crawlDomain(t, cfg, signal, taken) {
     const emails = new Map();   // email -> page it was found on
     const visited = new Set();
+    const local = new AbortController();               // cancels this domain's leftovers once a great address is found
+    const onAbort = () => local.abort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    const sig = local.signal;
     let okPages = 0;
-    let attempts = 0;
-
-    const visit = async (url) => {
-      const key = url.replace(/\/+$/, '').toLowerCase();
-      if (visited.has(key)) return null;
-      visited.add(key);
-      attempts++;
-      try {
-        const html = await fetchPage(url, cfg, signal);
-        okPages++;
-        for (const e of harvestEmails(html)) if (!emails.has(e)) emails.set(e, url);
-        return html;
-      } catch (err) {
-        if (signal.aborted) throw err;
-        return null;
-      }
-    };
 
     const hasHigh = () => [...emails.keys()].some((e) => {
       const [m, d] = splitEmail(e);
       return classify(m, d, t.domain) === 'high';
     });
 
-    const home = await visit(t.origin + '/');
-    if (t.entry) await visit(t.entry);
-
-    if (cfg.deep) {
-      const queue = [];
-      if (home) queue.push(...discoverLinks(home, t));
-      for (const p of [...BASE_DEEP_PATHS, ...cfg.extraPaths]) queue.push(t.origin + p);
-      for (const u of queue) {
-        if (signal.aborted) break;
-        if (hasHigh()) break;                          // good enough, stop early
-        if (okPages === 0 && attempts >= 3) break;     // site unreachable
-        await visit(u);
+    const visit = async (url) => {
+      const key = url.replace(/\/+$/, '').toLowerCase();
+      if (visited.has(key) || sig.aborted) return null;
+      visited.add(key);
+      try {
+        const html = await fetchPage(url, cfg, sig);
+        okPages++;
+        for (const e of harvestEmails(html)) if (!emails.has(e)) emails.set(e, url);
+        if (hasHigh()) local.abort();                  // good enough: stop the remaining requests
+        return html;
+      } catch (_) {
+        return null;
       }
-    }
+    };
 
-    const rows = [];
+    try {
+      // Stage 1: the homepage and every known path, all at once
+      const known = [];
+      if (t.entry) known.push(t.entry);
+      if (cfg.deep) for (const p of [...BASE_DEEP_PATHS, ...cfg.extraPaths]) known.push(t.origin + p);
+      const homeP = visit(t.origin + '/');
+      const knownP = known.map(visit);
+
+      // Stage 2: contact / policy links found on the homepage, fetched as soon as it arrives
+      const home = await homeP;
+      if (cfg.deep && home && !sig.aborted) await Promise.all(discoverLinks(home, t).map(visit));
+      await Promise.all(knownP);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+    if (signal.aborted) throw new Error('aborted');
+
+    // Score candidates, then check MX for the best few in parallel
+    const cands = [];
     for (const [email, source] of emails) {
+      if (taken && taken.has(email)) continue;         // already used for another store
       const [mailbox, emailDomain] = splitEmail(email);
       const confidence = classify(mailbox, emailDomain, t.domain);
       if (cfg.ownerOnly && confidence === 'low') continue;
-      const mx = await hasMx(emailDomain);
-      const mxState = mx === true ? 'yes' : mx === false ? 'no' : 'unknown';
-      if (cfg.verifiedOnly && mxState !== 'yes') continue;
-      rows.push({ store: t.domain, email, mailbox, emailDomain, mx: mxState, confidence, source });
+      cands.push({ store: t.domain, email, mailbox, emailDomain, confidence, source });
     }
-    rows.sort((a, b) => RANK[a.confidence] - RANK[b.confidence]);
+    cands.sort((a, b) => RANK[a.confidence] - RANK[b.confidence]);
+
+    const checked = await Promise.all(cands.slice(0, 6).map(async (c) => {
+      const mx = await hasMx(c.emailDomain);
+      return { ...c, mx: mx === true ? 'yes' : mx === false ? 'no' : 'unknown' };
+    }));
+    const rows = checked.filter((r) => !cfg.verifiedOnly || r.mx === 'yes');
+    rows.sort((a, b) => qualityScore(a, t.domain) - qualityScore(b, t.domain));
 
     return {
       status: okPages === 0 ? 'failed' : rows.length ? 'ok' : 'none',
@@ -427,6 +469,7 @@
     setStatus('running');
     paintNow();
 
+    const taken = new Set(state.rows.map((r) => r.email));
     let next = 0;
     let nextStart = 0;
     const gate = async () => {
@@ -444,10 +487,12 @@
         if (signal.aborted) return;
         const t = pending[i];
         try {
-          const res = await crawlDomain(t, cfg, signal);
+          const res = await crawlDomain(t, cfg, signal, taken);
           if (signal.aborted) return;
-          state.rows.push(...res.rows);
-          state.done[t.domain] = res.status;
+          const fresh = res.rows.filter((r) => !taken.has(r.email));
+          fresh.forEach((r) => taken.add(r.email));
+          state.rows.push(...fresh);
+          state.done[t.domain] = fresh.length ? 'ok' : res.status === 'ok' ? 'none' : res.status;
         } catch (_) {
           if (signal.aborted) return;
           state.done[t.domain] = 'failed';
@@ -758,6 +803,14 @@
   function init() {
     load();
     if (HOSTED_FETCHER) { state.config.proxy = 'custom'; state.config.customProxy = HOSTED_FETCHER; }
+
+    // Results saved by an older version may hold several addresses per store: keep only the best one
+    const best = new Map();
+    for (const r of state.rows) {
+      const cur = best.get(r.store);
+      if (!cur || qualityScore(r, r.store) < qualityScore(cur, cur.store)) best.set(r.store, r);
+    }
+    state.rows = [...best.values()];
 
     $('#optDeep').checked = !!state.config.deep;
     $('#optVerified').checked = !!state.config.verifiedOnly;
