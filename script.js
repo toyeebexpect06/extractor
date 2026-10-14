@@ -8,7 +8,7 @@
 
   // Paste your deployed worker URL here (see worker.js) and every visitor gets working extraction
   // with no setup, e.g. 'https://smartify-fetch.yourname.workers.dev/?url={url}'
-  const HOSTED_FETCHER = 'fetcher.toyeebexpect06.workers.dev/?url={url}';
+  const HOSTED_FETCHER = 'https://fetcher.toyeebexpect06.workers.dev/?url={url}';
 
   const STORE_KEY = 'smartify.state.v2';
   const CONCURRENCY = 50;           // domains crawled in parallel
@@ -93,7 +93,7 @@
     el.textContent = msg;
     el.className = 'toast show' + (kind ? ' ' + kind : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+    toastTimer = setTimeout(() => el.classList.remove('show'), kind === 'bad' ? 9000 : 3200);
   }
 
   async function fetchT(url, opts = {}, ms = FETCH_TIMEOUT_MS, outer) {
@@ -308,6 +308,7 @@
     return tpl.includes('{url}') ? tpl.replace('{url}', encodeURIComponent(url)) : tpl + encodeURIComponent(url);
   }
 
+  let lastFetchError = '';
   let inflight = 0;
   const waiters = [];
   async function acquire() {
@@ -326,6 +327,9 @@
       const r = await fetchT(proxied(url, cfg), { redirect: 'follow' }, FETCH_TIMEOUT_MS, signal);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const text = await r.text();
+      if (/<title>\s*Smartify/i.test(text.slice(0, 4000))) {
+        throw new Error('the fetcher returned the Smartify page, not the store page');
+      }
       return text.slice(0, MAX_PAGE_CHARS);
     } finally {
       release();
@@ -376,7 +380,8 @@
         for (const e of harvestEmails(html)) if (!emails.has(e)) emails.set(e, url);
         if (hasHigh()) local.abort();                  // good enough: stop the remaining requests
         return html;
-      } catch (_) {
+      } catch (err) {
+        if (!sig.aborted && err && err.message) lastFetchError = err.message;
         return null;
       }
     };
@@ -470,6 +475,10 @@
     paintNow();
 
     const taken = new Set(state.rows.map((r) => r.email));
+    let failStreak = 0;
+    let successes = 0;
+    let stopReason = '';
+    lastFetchError = '';
     let next = 0;
     let nextStart = 0;
     const gate = async () => {
@@ -499,6 +508,15 @@
         }
         schedulePaint();
         saveSoon();
+
+        // If nothing at all can be fetched, stop early and say why instead of grinding through the list
+        if (state.done[t.domain] === 'failed') failStreak++; else { failStreak = 0; successes++; }
+        if (!successes && failStreak >= 8 && !stopReason) {
+          stopReason = 'The first 8 stores could not be fetched'
+            + (lastFetchError ? ' (' + lastFetchError + ')' : '')
+            + '. Check the Page fetcher setting.';
+          state.runCtrl.abort();
+        }
       }
     };
 
@@ -512,7 +530,7 @@
     save();
 
     if (aborted) {
-      toast('Stopped. Press run extraction to resume where you left off.');
+      toast(stopReason || 'Stopped. Press run extraction to resume where you left off.', stopReason ? 'bad' : '');
     } else {
       const s = computeStats();
       toast(`Finished: ${s.withEmail} of ${s.scanned} domains had an address.`);
