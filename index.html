@@ -37,7 +37,7 @@
     <section class="card run" aria-labelledby="runTitle">
       <div class="run-head">
         <h2 id="runTitle">Live run</h2>
-        <p class="run-meta">20 parallel · 60ms pacing · progress auto-saved</p>
+        <p class="run-meta">50 parallel · 5ms pacing · progress auto-saved</p>
       </div>
 
       <div class="run-main">
@@ -108,13 +108,14 @@
         <div class="field">
           <label for="proxySelect">Page fetcher</label>
           <select id="proxySelect">
+            <option value="local">This server (node server.js)</option>
             <option value="allorigins">allorigins (public proxy)</option>
             <option value="corsproxy">corsproxy.io (public proxy)</option>
             <option value="custom">My own proxy (recommended)</option>
             <option value="none">Direct (only for sites that allow CORS)</option>
           </select>
           <input type="text" id="customProxy" class="hidden" placeholder="https://your-worker.workers.dev/?url={url}" autocomplete="off" spellcheck="false">
-          <p class="note">Browsers block reading other sites directly, so pages load through a proxy. See worker.js to host your own.</p>
+          <p class="note">Browsers can't read other sites directly, so pages load through a fetcher. Run server.js for the built-in one, or host worker.js.</p>
         </div>
       </section>
 
